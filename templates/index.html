@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Consulta Manual – Resultados ICFES Saber 11</title>
+
+    <!-- Bootstrap 5 CDN -->
+    <link
+        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+        rel="stylesheet">
+
+    <style>
+        body {
+            background: #f5f7fa;
+        }
+        .card-custom {
+            max-width: 600px;
+            margin: 60px auto;
+            border-radius: 12px;
+            box-shadow: 0px 4px 12px rgba(0,0,0.1);
+        }
+        .btn-custom {
+            background-color: #0054a6;
+            color: white;
+        }
+        .btn-custom:hover {
+            background-color: #003f7a;
+            color: white;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="container">
+    <div class="card card-custom p-4">
+
+        <h3 class="text-center mb-3">Consulta Manual – Resultados Saber 11</h3>
+        <p class="text-center text-muted mb-4">
+            Ingresa tus datos exactamente como fueron registrados en el ICFES.
+        </p>
+
+        <!-- Mensajes flash -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="mb-3">
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        <form action="{{ url_for('consulta_manual') }}" method="POST">
+
+            <!-- Tipo de documento -->
+            <div class="mb-3">
+                <label class="form-label">Tipo de Documento</label>
+                <select name="tipo_documento" class="form-select" required>
+                    <option value="">Seleccione...</option>
+                    <option value="CC">Cédula de Ciudadanía</option>
+                    <option value="TI">Tarjeta de Identidad</option>
+                    <option value="CE">Cédula de Extranjería</option>
+                    <option value="RC">Registro Civil</option>
+                    <option value="PA">Pasaporte</option>
+                </select>
+            </div>
+
+            <!-- Número de documento -->
+            <div class="mb-3">
+                <label class="form-label">Número de Documento</label>
+                <input
+                    type="text"
+                    name="numero_documento"
+                    class="form-control"
+                    placeholder="Ej: 1234567890"
+                    required
+                >
+            </div>
+
+            <!-- Fecha de nacimiento -->
+            <div class="mb-3">
+                <label class="form-label">Fecha de Nacimiento</label>
+                <input
+                    type="date"
+                    name="fecha_nacimiento"
+                    class="form-control"
+                    required
+                >
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">Número de Registro (Opcional)</label>
+                <input
+                    type="text"
+                    name="numero_registro"
+                    class="form-control"
+                    placeholder="Si lo tienes, ingrésalo aquí"
+                    maxlength="16"
+                >
+                <div class="form-text">
+                    Puedes usar la fecha de nacimiento O el número de registro
+                </div>
+            </div>
+
+            <!-- Tomar screenshot -->
+            <div class="form-check mb-3">
+                <input
+                    class="form-check-input"
+                    type="checkbox"
+                    name="take_screenshot"
+                    id="checkScreenshot"
+                >
+                <label class="form-check-label" for="checkScreenshot">
+                    Tomar screenshot de la página de resultados
+                </label>
+            </div>
+
+            <!-- Botón -->
+            <button type="submit" class="btn btn-custom w-100">
+                Consultar Resultados
+            </button>
+
+        </form>
+
+        <div class="text-center mt-4">
+            <a href="{{ url_for('consulta_excel_form') }}">Consulta por Excel →</a>
+        </div>
+
+    </div>
+</div>
+
+</body>
+</html>

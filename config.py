@@ -5,11 +5,11 @@ BASE_DIR = Path(__file__).resolve().parent
 
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-icfes")
 
-ANTI_CAPTCHA_KEY = os.getenv("ANTI_CAPTCHA_KEY", "PON_AQUI_TU_KEY_DE_ANTICAPTCHA")
+ANTI_CAPTCHA_KEY = os.getenv("ANTI_CAPTCHA_KEY", "d057f1ebb8c4334baf6441dffb519a10")
 
 ICFES_LOGIN_URL = "https://resultadossaber11.icfes.gov.co/login"
 
-HEADLESS = bool(int(os.getenv("PLAYWRIGHT_HEADLESS", "1")))
+HEADLESS = False
 
 DATA_DIR = BASE_DIR / "data"
 EXPORT_DIR = BASE_DIR / "exports"

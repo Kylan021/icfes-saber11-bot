@@ -1,7 +1,3 @@
-from __future__ import annotations
-
-from pathlib import Path
-
 from flask import (
     Flask,
     render_template,
@@ -11,8 +7,8 @@ from flask import (
     send_from_directory,
     flash,
 )
-
 from werkzeug.utils import secure_filename
+from pathlib import Path
 
 from config import Config, DATA_DIR, EXPORT_DIR, SCREENSHOT_DIR
 from services.results_service import (
@@ -23,76 +19,67 @@ from services.results_service import (
 app = Flask(__name__)
 app.config.from_object(Config)
 
-# Carpeta para subir archivos de Excel
+# IMPORTANTE: Configurar secret key para flash messages
+app.secret_key = app.config['SECRET_KEY']
+
+# Carpeta para subir archivos
 UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
 app.config["UPLOAD_FOLDER"] = str(UPLOAD_DIR)
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB máximo (por si acaso)
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB
 
 
 @app.route("/", methods=["GET"])
 def index():
-    """
-    Página inicial con formulario de consulta manual:
-      - tipo_documento
-      - numero_documento
-      - fecha_nacimiento
-      - checkbox: tomar screenshot
-    """
+    """Página inicial con formulario de consulta manual"""
     return render_template("index.html")
 
 
 @app.route("/consulta-manual", methods=["POST"])
 def consulta_manual():
-    """
-    Procesa la consulta de un solo estudiante a partir
-    del formulario de la página principal.
-    """
+    """Procesa la consulta de un solo estudiante"""
     tipo_doc = request.form.get("tipo_documento", "").strip()
     numero_doc = request.form.get("numero_documento", "").strip()
     fecha_nac = request.form.get("fecha_nacimiento", "").strip()
+    numero_reg = request.form.get("numero_registro", "").strip()
     take_screenshot = bool(request.form.get("take_screenshot"))
 
-    if not tipo_doc or not numero_doc or not fecha_nac:
-        flash("Por favor completa todos los campos.", "danger")
+    if not tipo_doc or not numero_doc:
+        flash("Tipo y número de documento son obligatorios.", "danger")
+        return redirect(url_for("index"))
+    
+    if not fecha_nac and not numero_reg:
+        flash("Debes proporcionar fecha de nacimiento O número de registro.", "danger")
         return redirect(url_for("index"))
 
-    # Llamar al servicio de consulta
-    resultado = consultar_un_estudiante(
-        tipo_documento=tipo_doc,
-        numero_documento=numero_doc,
-        fecha_nacimiento=fecha_nac,
-        take_screenshot=take_screenshot,
-    )
-
-    # Renderizar una plantilla de resultados
-    # La plantilla debe mostrar:
-    # - Datos básicos
-    # - Puntaje general y percentil general
-    # - Puntajes y percentiles por prueba
-    # - Mensaje de error (si 'error' != None)
-    # - Screenshot (si existe ruta)
-    return render_template("resultados.html", resultado=resultado)
+    try:
+        resultado = consultar_un_estudiante(
+            tipo_documento=tipo_doc,
+            numero_documento=numero_doc,
+            fecha_nacimiento=fecha_nac,
+            numero_registro=numero_reg,
+            take_screenshot=take_screenshot,
+        )
+        
+        if resultado.get("error"):
+            flash(f"Error en la consulta: {resultado['error']}", "warning")
+        
+        return render_template("resultados.html", resultado=resultado)
+        
+    except Exception as e:
+        flash(f"Error inesperado: {str(e)}", "danger")
+        return redirect(url_for("index"))
 
 
 @app.route("/consulta-excel", methods=["GET"])
 def consulta_excel_form():
-    """
-    Muestra un formulario para subir un archivo Excel con las columnas:
-      - tipo_documento
-      - numero_documento
-      - fecha_nacimiento
-    """
+    """Muestra formulario para subir Excel"""
     return render_template("consulta_excel.html")
 
 
 @app.route("/consulta-excel", methods=["POST"])
 def consulta_excel_procesar():
-    """
-    Procesa el archivo Excel subido, consulta todos los estudiantes
-    y genera los archivos de salida (CSV, Excel, JSON).
-    """
+    """Procesa archivo Excel"""
     file = request.files.get("archivo")
     take_screenshot = bool(request.form.get("take_screenshot"))
 
@@ -100,46 +87,43 @@ def consulta_excel_procesar():
         flash("Debes seleccionar un archivo Excel.", "danger")
         return redirect(url_for("consulta_excel_form"))
 
-    # Validar extensión mínima (simplemente por seguridad básica)
     filename = secure_filename(file.filename)
     if not (filename.endswith(".xls") or filename.endswith(".xlsx")):
         flash("El archivo debe ser un Excel (.xls o .xlsx).", "danger")
         return redirect(url_for("consulta_excel_form"))
 
-    # Guardar archivo subido
+    # Guardar archivo
     upload_path = UPLOAD_DIR / filename
     file.save(str(upload_path))
 
-    # Consultar y exportar resultados
-    df_resultados, rutas = consultar_y_exportar_desde_excel(
-        excel_path=upload_path,
-        take_screenshot=take_screenshot,
-        base_filename="resultados_icfes",  # puedes personalizarlo si quieres
-    )
+    try:
+        # Procesar Excel
+        df_resultados, rutas = consultar_y_exportar_desde_excel(
+            excel_path=upload_path,
+            take_screenshot=take_screenshot,
+            base_filename="resultados_icfes",
+        )
 
-    # Mostrar una página con:
-    # - Resumen de cuántos registros
-    # - Cuántos errores hubo
-    # - Links de descarga para CSV / Excel / JSON
-    num_registros = len(df_resultados)
-    num_errores = df_resultados["error"].notna().sum() if "error" in df_resultados.columns else 0
+        num_registros = len(df_resultados)
+        num_errores = df_resultados["error"].notna().sum() if "error" in df_resultados.columns else 0
 
-    return render_template(
-        "resultados_excel.html",
-        num_registros=num_registros,
-        num_errores=num_errores,
-        rutas=rutas,
-    )
+        flash(f"✅ Proceso completado: {num_registros} registros procesados", "success")
+        
+        return render_template(
+            "resultados_excel.html",
+            num_registros=num_registros,
+            num_errores=num_errores,
+            rutas=rutas,
+        )
+        
+    except Exception as e:
+        flash(f"Error al procesar archivo: {str(e)}", "danger")
+        return redirect(url_for("consulta_excel_form"))
 
 
 @app.route("/descargar/<formato>")
 def descargar_resultados(formato: str):
-    """
-    Permite descargar los archivos generados en EXPORT_DIR.
-
-    Soporta 'csv', 'xlsx', 'json' usando el nombre base:
-      resultados_icfes.<ext>
-    """
+    """Descarga archivos generados"""
     formato = formato.lower()
     if formato not in ("csv", "xlsx", "json"):
         flash("Formato no soportado.", "danger")
@@ -161,10 +145,7 @@ def descargar_resultados(formato: str):
 
 @app.route("/screenshots/<path:filename>")
 def ver_screenshot(filename: str):
-    """
-    Sirve archivos de screenshot desde SCREENSHOT_DIR.
-    Esto permite mostrar o descargar capturas de resultados.
-    """
+    """Sirve archivos de screenshot"""
     file_path = SCREENSHOT_DIR / filename
     if not file_path.exists():
         flash("La captura de pantalla no existe.", "warning")
@@ -173,10 +154,12 @@ def ver_screenshot(filename: str):
     return send_from_directory(
         directory=str(SCREENSHOT_DIR),
         path=file_path.name,
-        as_attachment=False,  # False = se muestra en el navegador
+        as_attachment=False,
     )
 
 
 if __name__ == "__main__":
-    # Debug=True sólo para desarrollo local
+    print("🚀 Iniciando servidor Flask...")
+    print(f"📂 Directorio de exportación: {EXPORT_DIR}")
+    print(f"📸 Directorio de screenshots: {SCREENSHOT_DIR}")
     app.run(host="0.0.0.0", port=5000, debug=True)

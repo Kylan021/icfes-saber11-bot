@@ -3,255 +3,382 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 import time
-import base64
-import requests
+from anticaptchaofficial.recaptchav2proxyless import recaptchaV2Proxyless
 
-from playwright.sync_api import sync_playwright, Page, expect
+from playwright.sync_api import sync_playwright, Page
 
 from config import ICFES_LOGIN_URL, HEADLESS, SCREENSHOT_DIR, ANTI_CAPTCHA_KEY
 
+TIPO_DOC_LABEL_MAP = {
+    "CC": "Cédula de ciudadanía",
+    "TI": "Tarjeta de identidad",
+    "CE": "Cédula de extranjería",
+    "RC": "Registro civil",
+    "PA": "Pasaporte",
+}
 
 @dataclass
 class LoginParams:
-    """Parámetros necesarios para hacer la consulta de resultados."""
     tipo_documento: str
     numero_documento: str
-    fecha_nacimiento: str  # puede venir como DD/MM/YYYY o YYYY-MM-DD
-
+    fecha_nacimiento: str = ""
+    numero_registro: str = ""
 
 @dataclass
 class FetchResult:
-    """Resultado de la automatización: HTML y ruta del pantallazo (si aplica)."""
     html: str
     screenshot_path: Optional[Path] = None
 
 
 def _normalizar_fecha(fecha_str: str) -> str:
-    """
-    Normaliza la fecha de nacimiento a formato YYYY-MM-DD para <input type="date">.
-
-    - Si viene como 'DD/MM/YYYY', la convierte.
-    - Si ya viene como 'YYYY-MM-DD', la deja igual.
-    - Si no se puede parsear, devuelve el string original.
-    """
     fecha_str = fecha_str.strip()
     if not fecha_str:
         return fecha_str
-
-    # Si ya parece estar en formato HTML5 (YYYY-MM-DD)
     if "-" in fecha_str and len(fecha_str) == 10:
         return fecha_str
-
-    # Intentar convertir desde DD/MM/YYYY
     try:
-        dt = datetime.strptime(fecha_str, "%d/%m/%Y")
+        from datetime import datetime as _dt
+        dt = _dt.strptime(fecha_str, "%d/%m/%Y")
         return dt.strftime("%Y-%m-%d")
     except ValueError:
-        # Si falla el parseo, devolvemos tal cual
         return fecha_str
 
 
-def _fill_login_form(page: Page, params: LoginParams) -> None:
-    """
-    Llena el formulario de login en la página del ICFES.
-
-    Basado en el HTML actual del login:
-      - Tipo de documento:  select[formcontrolname="tipoDocumento"]
-      - Número de documento: input#identificacion
-      - Fecha de nacimiento: input#fechaNacimiento (type="date", formato YYYY-MM-DD)
-    """
-    # Esperar a que el formulario esté cargado
-    page.wait_for_selector("form")
-
-    # Tipo de documento (si existe el combo)
+def _seleccionar_tipo_documento(page: Page, tipo_documento: str) -> None:
+    code = (tipo_documento or "").strip()
+    label = TIPO_DOC_LABEL_MAP.get(code.upper(), code)
     try:
-        tipo_doc_select = page.locator('select[formcontrolname="tipoDocumento"]')
-        if tipo_doc_select.count() > 0:
-            tipo_doc_select.select_option(params.tipo_documento)
+        container_selector = (
+            "icfes-selector-reactivo[formcontrolname='tipoIdentificacion'] "
+            ".ng-select-container"
+        )
+        container = page.locator(container_selector)
+        if container.count() == 0:
+            print("No se encontró el combo de tipo de documento.")
+            return
+        container.first.click()
+        page.wait_for_selector(".ng-dropdown-panel .ng-option", timeout=5000)
+        option = page.locator(".ng-dropdown-panel .ng-option", has_text=label)
+        if option.count() > 0:
+            option.first.click()
+        else:
+            print(
+                f"No se encontró una opción que contenga el texto '{label}'. "
+                "Se seleccionará la primera opción disponible."
+            )
+            page.locator(".ng-dropdown-panel .ng-option").first.click()
+        time.sleep(0.3)
     except Exception as e:
-        # No es crítico: el backend validará si falta
         print(f"Advertencia al seleccionar tipo de documento: {e}")
 
-    # Llenar número de documento
-    page.fill("#identificacion", params.numero_documento)
 
-    # Normalizar y llenar fecha de nacimiento
-    fecha_normalizada = _normalizar_fecha(params.fecha_nacimiento)
-    page.fill("#fechaNacimiento", fecha_normalizada)
+def _click_recaptcha_checkbox(page: Page) -> None:
+    print("Haciendo clic en el checkbox del reCAPTCHA...")
+    checkbox_iframe = page.locator("iframe[title='reCAPTCHA']").first
+    if checkbox_iframe.count() > 0:
+        checkbox_iframe.click()
+        print("✔ Checkbox clickeado.")
+        time.sleep(1)
+    else:
+        print("⚠ No se encontró el iframe del checkbox.")
 
-    # Pequeña pausa para que Angular procese cambios de formulario
-    time.sleep(0.5)
+
+def _handle_recaptcha_challenge(page: Page) -> None:
+    print("Verificando si apareció desafío visual...")
+
+    time.sleep(2)
+
+    verify_btn = page.locator("button:has-text('Verificar'), button:has-text('Confirmar'), button:has-text('Next')")
+    skip_btn = page.locator("button:has-text('Omitir'), button:has-text('Skip')")
+
+    if verify_btn.count() > 0 and verify_btn.first.is_visible():
+        print("✔ Desafío detectado. Haciendo clic en 'Verificar'...")
+        verify_btn.first.click()
+        time.sleep(3)
+        _handle_recaptcha_challenge(page)
+    elif skip_btn.count() > 0 and skip_btn.first.is_visible():
+        print("✔ Desafío detectado. Haciendo clic en 'Omitir'...")
+        skip_btn.first.click()
+        time.sleep(3)
+    else:
+        print("✔ No apareció desafío visual.")
+
+    challenge_frame = page.locator("iframe[src*='recaptcha/api2/bframe']")
+    if challenge_frame.count() > 0 and challenge_frame.first.is_visible():
+        print("⚠ El desafío sigue visible. Reintentando...")
+        time.sleep(2)
+        _handle_recaptcha_challenge(page)
+    else:
+        print("✔ Desafío cerrado.")
+
+
+def _trigger_recaptcha_callback(page: Page) -> None:
+    print("Ejecutando callback de éxito del CAPTCHA...")
+    page.evaluate("""
+        () => {
+            const widget = document.querySelector('.g-recaptcha');
+            const isInvisible = widget && widget.getAttribute('data-size') === 'invisible';
+            if (isInvisible) {
+                const widgetId = grecaptcha.getResponse ? 0 : null;
+                if (widgetId !== null && typeof grecaptcha.execute === 'function') {
+                    grecaptcha.execute(widgetId);
+                }
+            }
+            const callbackName = widget?.getAttribute('data-callback');
+            if (callbackName && typeof window[callbackName] === 'function') {
+                const token = grecaptcha.getResponse();
+                if (token) window[callbackName](token);
+            }
+            window.dispatchEvent(new CustomEvent('recaptcha-success', { detail: { success: true } }));
+        }
+    """)
+    print("✔ Callback ejecutado (si aplica).")
+    time.sleep(1)
 
 
 def _solve_captcha_with_anticaptcha(page: Page) -> None:
-    """
-    Resuelve el reCAPTCHA usando el servicio Anti-Captcha.
-    
-    Detecta el sitekey de reCAPTCHA en la página y utiliza la API de Anti-Captcha
-    para obtener el token de solución.
-    """
-    if not ANTI_CAPTCHA_KEY or ANTI_CAPTCHA_KEY.startswith("PON_AQUI"):
-        raise RuntimeError(
-            "No se ha configurado ANTI_CAPTCHA_KEY. "
-            "Define la key en variables de entorno o en config.py para usar Anti-Captcha."
-        )
-
-    # Verificar si hay reCAPTCHA en la página
-    recaptcha_frame = page.frame_locator('iframe[src*="recaptcha"]').first
-    if recaptcha_frame.count() == 0:
-        print("No se encontró reCAPTCHA en la página, continuando...")
+    token = page.evaluate("() => grecaptcha.getResponse()")
+    if token:
+        print("✔ CAPTCHA ya resuelto anteriormente.")
         return
 
-    # Obtener el sitekey del reCAPTCHA
-    sitekey = page.get_attribute('div[class*="recaptcha"]', "data-sitekey")
-    if not sitekey:
-        # Intentar encontrar el sitekey de otras formas
-        sitekey_element = page.locator('[data-sitekey]').first
-        if sitekey_element.count() > 0:
-            sitekey = sitekey_element.get_attribute("data-sitekey")
-        else:
-            # Buscar en scripts
-            sitekey_script = page.locator('script:contains("sitekey")').first
-            if sitekey_script.count() > 0:
-                script_content = sitekey_script.text_content()
-                import re
-                sitekey_match = re.search(r'sitekey["\']?\s*:\s*["\']([^"\']+)["\']', script_content)
-                if sitekey_match:
-                    sitekey = sitekey_match.group(1)
+    print("Buscando reCAPTCHA en la página...")
+    iframes = page.locator("iframe[src*='recaptcha']")
+    if iframes.count() == 0:
+        raise RuntimeError("No se detectó reCAPTCHA.")
+
+    iframe = iframes.first
+    sitekey = iframe.evaluate("""(el) => {
+        const src = el.getAttribute('src');
+        const match = src.match(/[?&]k=([^&]+)/);
+        return match ? match[1] : null;
+    }""")
 
     if not sitekey:
-        raise RuntimeError("No se pudo detectar el sitekey de reCAPTCHA")
+        raise RuntimeError("No se pudo extraer el sitekey.")
 
-    print(f"Sitekey detectado: {sitekey}")
+    print(f"✓ Sitekey detectado: {sitekey}")
+    solver = recaptchaV2Proxyless()
+    solver.set_verbose(1)
+    solver.set_key(ANTI_CAPTCHA_KEY)
+    solver.set_website_url(page.url)
+    solver.set_website_key(sitekey)
 
-    # Obtener la URL actual para el parámetro pageurl
-    pageurl = page.url
+    g_response = solver.solve_and_return_solution()
+    if g_response == 0:
+        raise RuntimeError(f"Error Anti-Captcha: {solver.error_code}")
 
-    # Crear tarea de reCAPTCHA v2 sin proxy
-    from urllib.parse import urlparse
-    
-    # Preparar datos para la API de Anti-Captcha
-    task_data = {
-        "clientKey": ANTI_CAPTCHA_KEY,
-        "task": {
-            "type": "RecaptchaV2TaskProxyless",
-            "websiteURL": pageurl,
-            "websiteKey": sitekey
+    print("✓ CAPTCHA resuelto por Anti-Captcha.")
+    print(f"Token (primeros 50 chars): {g_response[:50]}...")
+
+    page.evaluate("""
+        (token) => {
+            const responseField = document.getElementById('g-recaptcha-response') ||
+                                  document.querySelector('[name="g-recaptcha-response"]');
+            if (responseField) {
+                responseField.value = token;
+                responseField.innerHTML = token;
+                ['input', 'change'].forEach(evt => {
+                    responseField.dispatchEvent(new Event(evt, { bubbles: true }));
+                });
+            }
         }
-    }
+    """, g_response)
 
-    print("Enviando tarea a Anti-Captcha...")
-    
-    # Crear la tarea
-    create_task_url = "https://api.anti-captcha.com/createTask"
-    create_response = requests.post(create_task_url, json=task_data)
-    create_result = create_response.json()
+    _click_recaptcha_checkbox(page)
+    _trigger_recaptcha_callback(page)
+    _handle_recaptcha_challenge(page)
 
-    if create_result.get("errorId") != 0:
-        error_code = create_result.get("errorCode", "UNKNOWN")
-        error_desc = create_result.get("errorDescription", "Error desconocido")
-        raise RuntimeError(f"Error de Anti-Captcha al crear tarea: {error_code} - {error_desc}")
+    # ✅ Verificar si el CAPTCHA fue aceptado por el sitio
+    print("Verificando si el CAPTCHA fue aceptado por el sitio...")
+    page.wait_for_function("""
+        () => {
+            const tokenField = document.getElementById('g-recaptcha-response');
+            return tokenField && tokenField.value.length > 0;
+        }
+    """, timeout=10000)
+    print("✔ CAPTCHA aceptado por el sitio.")
 
-    task_id = create_result["taskId"]
-    print(f"Tarea creada con ID: {task_id}")
+    result = page.evaluate("""
+        () => {
+            const responseField = document.getElementById('g-recaptcha-response');
+            return {
+                hasValue: responseField && responseField.value.length > 0,
+                buttonEnabled: !document.querySelector('button[type=\"submit\"]').disabled
+            };
+        }
+    """)
+    print(f"Verificación final: {result}")
+    if not result["buttonEnabled"]:
+        print("⚠ El botón de ingreso aún está deshabilitado.")
 
-    # Esperar por la solución
-    get_result_url = "https://api.anti-captcha.com/getTaskResult"
-    get_result_data = {
-        "clientKey": ANTI_CAPTCHA_KEY,
-        "taskId": task_id
-    }
 
-    max_attempts = 60  # Máximo 2 minutos (2 segundos por intento)
-    for attempt in range(max_attempts):
-        time.sleep(2)  # Esperar 2 segundos entre intentos
-        
-        get_response = requests.post(get_result_url, json=get_result_data)
-        result = get_response.json()
+def _fill_login_form(page: Page, params: LoginParams) -> None:
+    print("📝 Llenando formulario...")
+    page.wait_for_selector("form", timeout=10000)
+    time.sleep(1)
 
-        if result.get("errorId") != 0:
-            error_code = result.get("errorCode", "UNKNOWN")
-            error_desc = result.get("errorDescription", "Error desconocido")
-            raise RuntimeError(f"Error de Anti-Captcha al obtener resultado: {error_code} - {error_desc}")
+    print("  → Seleccionando tipo de documento...")
+    _seleccionar_tipo_documento(page, params.tipo_documento)
+    time.sleep(0.5)
 
-        status = result.get("status", "processing")
-        
-        if status == "ready":
-            # Solución obtenida
-            solution = result["solution"]["gRecaptchaResponse"]
-            print("reCAPTCHA resuelto exitosamente")
-            
-            # Inyectar el token en la página
-            page.evaluate(f"""
-            (function() {{
-                // Buscar el textarea del recaptcha
-                const textarea = document.querySelector('#g-recaptcha-response');
-                if (textarea) {{
-                    textarea.value = '{solution}';
-                    textarea.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                }}
-                
-                // También intentar con el campo hidden si existe
-                const hiddenField = document.querySelector('input[name="g-recaptcha-response"]');
-                if (hiddenField) {{
-                    hiddenField.value = '{solution}';
-                    hiddenField.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                }}
-                
-                // Disparar eventos para notificar a reCAPTCHA
-                const event = new Event('recaptcha-callback', {{ bubbles: true }});
-                document.dispatchEvent(event);
-                
-                console.log('Token de reCAPTCHA inyectado');
-            }})();
+    print("  → Ingresando número de documento...")
+    page.click("#identificacion")
+    time.sleep(0.2)
+    page.fill("#identificacion", params.numero_documento)
+    time.sleep(0.3)
+    page.evaluate("""
+        () => {
+            const input = document.getElementById('identificacion');
+            if (input) {
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.dispatchEvent(new Event('blur', { bubbles: true }));
+            }
+        }
+    """)
+    time.sleep(0.5)
+
+    if params.fecha_nacimiento:
+        print("  → Ingresando fecha de nacimiento...")
+        fecha_normalizada = _normalizar_fecha(params.fecha_nacimiento)
+        if fecha_normalizada:
+            page.click("#fechaNacimiento")
+            time.sleep(0.2)
+            page.fill("#fechaNacimiento", fecha_normalizada)
+            time.sleep(0.3)
+            page.evaluate("""
+                () => {
+                    const input = document.getElementById('fechaNacimiento');
+                    if (input) {
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                        input.dispatchEvent(new Event('blur', { bubbles: true }));
+                    }
+                }
             """)
-            
-            # Esperar un momento para que se procese
-            time.sleep(1)
-            return
+            time.sleep(0.5)
 
-        elif status == "processing":
-            print(f"Esperando solución... ({attempt + 1}/{max_attempts})")
-            continue
+    if params.numero_registro:
+        print("  → Ingresando número de registro...")
+        page.click("#numeroRegistro")
+        time.sleep(0.2)
+        page.fill("#numeroRegistro", params.numero_registro.upper())
+        time.sleep(0.3)
+        page.evaluate("""
+            () => {
+                const input = document.getElementById('numeroRegistro');
+                if (input) {
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    input.dispatchEvent(new Event('blur', { bubbles: true }));
+                }
+            }
+        """)
+        time.sleep(0.5)
 
-    raise RuntimeError("Tiempo de espera agotado para resolver el reCAPTCHA")
+    if not params.fecha_nacimiento and not params.numero_registro:
+        print("  ⚠️  ADVERTENCIA: No se proporcionó fecha de nacimiento ni número de registro")
 
+    print("  → Verificando validaciones...")
+    time.sleep(1)
+    validation_errors = page.evaluate("""
+        () => {
+            const errors = [];
+            const errorSelectors = [
+                '.error-message',
+                '.field-error',
+                '.invalid-feedback',
+                '.text-danger',
+                'icfes-mensajes-formulario'
+            ];
+            errorSelectors.forEach(selector => {
+                document.querySelectorAll(selector).forEach(el => {
+                    if (el.offsetParent !== null && el.textContent.trim()) {
+                        errors.push(el.textContent.trim());
+                    }
+                });
+            });
+            return errors;
+        }
+    """)
+    if validation_errors:
+        print(f"  ⚠️  Errores: {validation_errors}")
+    else:
+        print("  ✓ Sin errores de validación")
+    print("✅ Formulario completado")
 
 
 def _submit_form_and_wait_results(page: Page) -> None:
-    """
-    Envía el formulario y espera a que cargue la página de resultados.
-    """
-    # Hacer clic en el botón de consultar (Ingresar)
+    print("Enviando formulario...")
+
+    # ✅ Guardar HTML antes de enviar
+    pre_send_html_path = SCREENSHOT_DIR / f"pre_send_{page.evaluate('() => document.querySelector(\"#identificacion\").value')}.html"
+    pre_send_html_path.write_text(page.content(), encoding="utf-8")
+    print(f"HTML antes de enviar guardado en: {pre_send_html_path}")
+
     page.click("button[type='submit']")
+    page.wait_for_load_state("networkidle")
+    time.sleep(5)
 
-    # Esperar a que la página cambie (ya sea a resultados o a error)
+    # ✅ Guardar HTML después de enviar
+    post_send_html_path = SCREENSHOT_DIR / f"post_send_{page.evaluate('() => document.querySelector(\"#identificacion\").value')}.html"
+    post_send_html_path.write_text(page.content(), encoding="utf-8")
+    print(f"HTML después de enviar guardado en: {post_send_html_path}")
+
+    # ✅ Verificar si hay mensaje de error visible
+    error_selectors = [
+        ".error-message",
+        ".alert-danger",
+        ".text-danger",
+        "[class*='error']",
+        "[class*='alert']",
+    ]
+    for selector in error_selectors:
+        loc = page.locator(selector)
+        if loc.count() > 0 and loc.first.is_visible():
+            error_text = (loc.first.text_content() or "").strip()
+            raise RuntimeError(f"El sitio del ICFES muestra error: {error_text}")
+
+    # ✅ Esperar más tiempo y con mayor tolerancia
     try:
-        page.wait_for_load_state("networkidle")
-        time.sleep(3)
-
-        # Verificar si estamos en una página con posibles resultados
-        resultados_selector = "table, .resultados, .score, .puntaje, [class*='result']"
-        page.wait_for_selector(resultados_selector, timeout=10000)
-
+        print("Esperando que cargue el puntaje general (máx. 30 s)...")
+        page.wait_for_function("""
+            () => {
+                const el = document.querySelector("icfes-puntaje-general span");
+                return el && el.textContent && /\\d+/.test(el.textContent);
+            }
+        """, timeout=30000)
+        print("✔ Puntaje general cargado.")
     except Exception as e:
-        print(f"Espera de resultados falló: {e}")
-        # Verificar si hay mensaje de error visible
-        error_selectors = [".error", ".alert-danger", "[class*='error']", "[class*='alert']"]
-        for selector in error_selectors:
-            loc = page.locator(selector)
-            if loc.count() > 0 and loc.first.is_visible():
-                error_text = loc.first.text_content()
-                raise RuntimeError(f"Error en el formulario: {error_text}")
-        # Si no hay error visible, continuar con el HTML actual
+        print(f"⚠ No apareció el puntaje general: {e}")
+        debug_html = SCREENSHOT_DIR / "debug_no_puntaje.html"
+        debug_html.write_text(page.content(), encoding="utf-8")
+        print(f"HTML guardado en: {debug_html}")
+        raise RuntimeError("No se cargaron los resultados.")
+
+    # ✅ Esperar nombre también
+    try:
+        page.wait_for_function("""
+            () => {
+                const el = document.querySelector("icfes-navbar button");
+                return el && el.textContent.trim().length > 0;
+            }
+        """, timeout=10000)
+        print("✔ Nombre cargado.")
+    except Exception as e:
+        print(f"⚠ No apareció el nombre: {e}")
+
+    print(f"📍 URL actual: {page.url}")
+    if "resultados" not in page.url and "reporte" not in page.url:
+        raise RuntimeError("No llegamos a la página de resultados. La URL no contiene 'resultados' ni 'reporte'.")
+
+    print("✔ Página de resultados cargada completamente.")
 
 
 def _take_results_screenshot(page: Page, numero_documento: str) -> Path:
-    """
-    Toma un pantallazo de la página de resultados y devuelve la ruta.
-    """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{numero_documento}_{timestamp}.png"
     path = SCREENSHOT_DIR / filename
@@ -259,45 +386,10 @@ def _take_results_screenshot(page: Page, numero_documento: str) -> Path:
     return path
 
 
-def _handle_possible_errors(page: Page) -> None:
-    """
-    Maneja posibles errores o mensajes en la página.
-    """
-    # Verificar mensajes de error comunes
-    error_selectors = [
-        ".error",
-        ".alert-danger",
-        ".text-danger",
-        "[class*='error']",
-        "[class*='alert']",
-    ]
-
-    for selector in error_selectors:
-        elements = page.locator(selector)
-        if elements.count() > 0:
-            for i in range(elements.count()):
-                error_element = elements.nth(i)
-                if error_element.is_visible():
-                    error_text = (error_element.text_content() or "").strip()
-                    if error_text and len(error_text) > 5:
-                        print(f"Advertencia/Error detectado: {error_text}")
-
-
 def fetch_results_page(
     params: LoginParams,
     take_screenshot: bool = False,
 ) -> FetchResult:
-    """
-    Función principal de este módulo.
-
-    Flujo:
-      - Abre el navegador con Playwright.
-      - Va al login del ICFES.
-      - Llena el formulario con los datos del estudiante.
-      - Resuelve el CAPTCHA mediante Anti-Captcha (cuando implementes el stub).
-      - Envía el formulario y espera los resultados.
-      - Devuelve el HTML de la página de resultados y, opcionalmente, el pantallazo.
-    """
     playwright = None
     browser = None
     context = None
@@ -320,39 +412,33 @@ def fetch_results_page(
         )
         page = context.new_page()
 
-        # Ir a la página de login
         print("Navegando a la página de login...")
         page.goto(ICFES_LOGIN_URL, wait_until="networkidle")
         time.sleep(2)
 
-        # Llenar formulario
         print("Llenando formulario...")
         _fill_login_form(page, params)
 
-        # Resolver CAPTCHA (cuando completes la integración)
-        print("Resolviendo CAPTCHA (stub)...")
+        print("Resolviendo CAPTCHA...")
         _solve_captcha_with_anticaptcha(page)
 
-        # Enviar formulario y esperar resultados
         print("Enviando formulario...")
         _submit_form_and_wait_results(page)
 
-        # Manejar posibles errores en pantalla
-        _handle_possible_errors(page)
+        # ✅ Guardar HTML real con datos
+        real_html_path = SCREENSHOT_DIR / f"real_{params.numero_documento}_con_datos.html"
+        real_html_path.write_text(page.content(), encoding="utf-8")
+        print(f"HTML con datos guardado en: {real_html_path}")
 
-        # (Opcional) tomar pantallazo
         if take_screenshot:
             print("Tomando screenshot...")
             screenshot_path = _take_results_screenshot(page, params.numero_documento)
 
-        # Obtener HTML final
         html = page.content()
-        print("Proceso completado exitosamente")
-
+        print("✔ Proceso completado exitosamente")
         return FetchResult(html=html, screenshot_path=screenshot_path)
 
     except Exception as e:
-        # Tomar screenshot de error si ocurre
         if take_screenshot and page is not None:
             error_screenshot_path = SCREENSHOT_DIR / (
                 f"error_{params.numero_documento}_"
@@ -363,12 +449,10 @@ def fetch_results_page(
                 screenshot_path = error_screenshot_path
             except Exception as ss_e:
                 print(f"No se pudo tomar screenshot de error: {ss_e}")
-
         print(f"Error durante la automatización: {e}")
         raise
 
     finally:
-        # Cerrar recursos ordenadamente
         if context is not None:
             context.close()
         if browser is not None:
