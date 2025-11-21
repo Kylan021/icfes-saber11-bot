@@ -1,0 +1,58 @@
+# === ARCHIVOS DEL SISTEMA ===
+.DS_Store
+Thumbs.db
+
+# === ENTORNO VIRTUAL ===
+venv/
+env/
+.venv/
+
+# === ARCHIVOS PYTHON ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# === CONFIGURACIÓN DEL ENTORNO ===
+# Variables de entorno (clave AntiCaptcha, etc.)
+.env
+
+# === LOGS ===
+logs/
+*.log
+
+# === EXPORTS DEL PROYECTO ===
+exports/
+screenshots/
+
+# === ARCHIVOS SUBIDOS TEMPORALMENTE ===
+data/uploads/
+*.tmp
+
+# === PLAYWRIGHT ===
+# Carpeta donde Playwright guarda browsers descargados
+playwright/.cache/
+ms-playwright/
+# Grabaciones de video si alguna vez las generas
+*.webm
+*.mp4
+
+# === FLASK ===
+instance/
+*.db
+*.sqlite3
+
+# === EDITORES ===
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# === ARCHIVOS TEMPORALES ===
+*.bak
+*.old
+*.orig
+
+# === ARCHIVOS EXCEL TEMPORALES ===
+~$*.xlsx
+~$*.xls
