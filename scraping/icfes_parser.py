@@ -6,42 +6,46 @@ def _safe_text(element):
     return element.get_text(strip=True) if element else None
 
 
-def _extract_number(text):
+def _extract_int(text):
     if not text:
         return None
-    try:
-        clean = re.sub(r"[^\d]", "", str(text))
-        return int(clean) if clean else None
-    except Exception:
-        return None
+    cleaned = re.sub(r"[^0-9]", "", str(text))
+    return int(cleaned) if cleaned else None
 
 
-def parse_icfes_results(html: str, percentiles_area: dict = None) -> dict:
-    """
-    Parsea el HTML de Resultados Saber 11 del ICFES.
-
-    - Nombre del estudiante (navbar, span.nombreCompleto)
-    - Puntaje general
-    - Percentil general
-    - Puntaje y percentil por cada prueba
-    """
+def parse_icfes_results(html: str, percentiles_area: dict | None = None) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     data = {}
 
-    nombre_span = soup.select_one("span.nombreCompleto")
-    data["nombre_estudiante"] = _safe_text(nombre_span)
+    nombre = soup.select_one("span.nombreCompleto")
+    data["nombre_estudiante"] = _safe_text(nombre)
 
-    puntaje_general_elem = soup.select_one("icfes-puntaje-general span.superior")
-    if not puntaje_general_elem:
-       
-        puntaje_general_elem = soup.select_one(".superior")
-    data["puntaje_general"] = _extract_number(_safe_text(puntaje_general_elem))
+    puntaje_general = None
+    comp_general = soup.find("icfes-puntaje-general")
+    if comp_general:
+        span_pg = comp_general.find("span", class_="texto-puntaje-principal")
+        puntaje_general = _extract_int(_safe_text(span_pg))
 
-    percentil_general_elem = soup.select_one(".texto-puntaje-principal")
-    if not percentil_general_elem:
-        
-        percentil_general_elem = soup.select_one(".escalar")
-    data["percentil_general"] = _extract_number(_safe_text(percentil_general_elem))
+    if puntaje_general is None:
+        span_pg = soup.find("span", class_="texto-puntaje-principal")
+        puntaje_general = _extract_int(_safe_text(span_pg))
+
+    data["puntaje_general"] = puntaje_general
+
+    percentil_general = None
+    label = soup.find("span", class_="texto",
+                      string=re.compile("Estudiantes a nivel nacional", re.IGNORECASE))
+    if label:
+        container = label.parent
+        sibling = container.find_next_sibling()
+        while sibling and percentil_general is None:
+            pct_span = sibling.find("span", class_="texto-puntaje-principal")
+            if pct_span:
+                percentil_general = _extract_int(_safe_text(pct_span))
+                break
+            sibling = sibling.find_next_sibling()
+
+    data["percentil_general"] = percentil_general
 
     areas = {
         "lectura_critica": "Lectura Crítica",
@@ -53,37 +57,34 @@ def parse_icfes_results(html: str, percentiles_area: dict = None) -> dict:
 
     for key, label in areas.items():
 
-        fila = soup.find(
-            "span",
-            class_="title-tab",
-            string=re.compile(label, re.IGNORECASE),
-        )
-        if fila:
-            enlace = fila.find_parent("a")
-            puntaje_elem = enlace.select_one(".superior") if enlace else None
-            data[f"puntaje_{key}"] = _extract_number(_safe_text(puntaje_elem))
-        else:
-            data[f"puntaje_{key}"] = None
+        puntaje_area = None
+        tab = soup.find("span", class_="title-tab",
+                        string=re.compile(label, re.IGNORECASE))
+        if tab:
+            link = tab.find_parent("a")
+            if link:
+                val = link.find("span", class_="superior")
+                puntaje_area = _extract_int(_safe_text(val))
+
+        data[f"puntaje_{key}"] = puntaje_area
 
         if percentiles_area and f"percentil_{key}" in percentiles_area:
             data[f"percentil_{key}"] = percentiles_area[f"percentil_{key}"]
             continue
 
-        area_label_p = soup.find(
-            "p",
-            class_="text-color-black",
-            string=re.compile(label, re.IGNORECASE),
-        )
-        if area_label_p:
-            escalar_elem = area_label_p.find_next("span", class_="escalar")
-            data[f"percentil_{key}"] = _extract_number(_safe_text(escalar_elem))
+        # Buscar percentil debajo del texto del área
+        p_area = soup.find("p", class_="text-color-black",
+                           string=re.compile(label, re.IGNORECASE))
+        if p_area:
+            escalar = p_area.find_next("span", class_="escalar")
+            data[f"percentil_{key}"] = _extract_int(_safe_text(escalar))
         else:
             data[f"percentil_{key}"] = None
 
     return data
 
 
-def parse_all(html: str, percentiles_area: dict = None) -> dict:
+def parse_all(html: str, percentiles_area: dict | None = None) -> dict:
     try:
         return parse_icfes_results(html, percentiles_area)
     except Exception as e:
