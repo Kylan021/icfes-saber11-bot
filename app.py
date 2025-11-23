@@ -107,7 +107,7 @@ def consulta_excel_procesar():
         num_registros = len(df_resultados)
         num_errores = df_resultados["error"].notna().sum() if "error" in df_resultados.columns else 0
 
-        flash(f"✅ Proceso completado: {num_registros} registros procesados", "success")
+        flash(f"Proceso completado: {num_registros} registros procesados", "success")
         
         return render_template(
             "resultados_excel.html",
@@ -159,7 +159,7 @@ def ver_screenshot(filename: str):
 
 
 if __name__ == "__main__":
-    print("🚀 Iniciando servidor Flask...")
-    print(f"📂 Directorio de exportación: {EXPORT_DIR}")
-    print(f"📸 Directorio de screenshots: {SCREENSHOT_DIR}")
+    print("Iniciando servidor Flask...")
+    print(f"Directorio de exportación: {EXPORT_DIR}")
+    print(f"Directorio de screenshots: {SCREENSHOT_DIR}")
     app.run(host="0.0.0.0", port=5000, debug=True)

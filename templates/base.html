@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>{% block title %}{% endblock %}{% block head %}{% endblock %}{% endblock %}</title>
+
+    <!-- Bootstrap 5 CDN -->
+    <link
+        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+        rel="stylesheet">
+
+    {% block styles %}
+    <style>
+        body {
+            background: #f5f7fa;
+        }
+        .card-custom {
+            max-width: 600px;
+            margin: 60px auto;
+            border-radius: 12px;
+            box-shadow: 0px 4px 12px rgba(0,0,0.1);
+        }
+        .btn-custom {
+            background-color: #0054a6;
+            color: white;
+        }
+        .btn-custom:hover {
+            background-color: #003f7a;
+            color: white;
+        }
+    </style>
+    {% endblock %}
+</head>
+
+<body>
+    {% block body %}{% endblock %}
+
+</body>
+</html>

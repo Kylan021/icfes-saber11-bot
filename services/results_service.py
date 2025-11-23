@@ -29,7 +29,7 @@ def consultar_un_estudiante(
     )
 
     try:
-        print(f"🔍 Consultando: {tipo_documento} {numero_documento}")
+        print(f"Consultando: {tipo_documento} {numero_documento}")
         fetch_result = fetch_results_page(params, take_screenshot=take_screenshot)
 
         parsed = parse_all(fetch_result.html)
@@ -44,11 +44,11 @@ def consultar_un_estudiante(
         }
 
         result.update(parsed)
-        print(f"✅ Consulta exitosa: {parsed.get('nombre_estudiante', 'N/A')}")
+        print(f"Consulta exitosa: {parsed.get('nombre_estudiante', 'N/A')}")
         return result
 
     except Exception as e:
-        print(f"❌ Error en consulta: {str(e)}")
+        print(f"Error en consulta: {str(e)}")
         return {
             "tipo_documento": tipo_documento,
             "numero_documento": numero_documento,
@@ -75,20 +75,30 @@ def consultar_desde_excel(
     if not excel_path.exists():
         raise FileNotFoundError(f"No se encontró el archivo: {excel_path}")
     
-    print(f"📂 Leyendo Excel: {excel_path}")
+    print(f"Leyendo Excel: {excel_path}")
     df_input = pd.read_excel(excel_path, sheet_name=sheet_name)
     
-    print(f"📊 Total de registros: {len(df_input)}")
+    print(f"Total de registros: {len(df_input)}")
 
     resultados: List[Dict] = []
 
     for idx, row in df_input.iterrows():
         tipo_doc = str(row.get("tipo_documento", "")).strip()
         num_doc = str(row.get("numero_documento", "")).strip()
-        fecha_nac = str(row.get("fecha_nacimiento", "")).strip()
+
+        raw_fecha = row.get("fecha_nacimiento", "")
+        if pd.isna(raw_fecha):
+            fecha_nac = ""
+        else:
+
+            if hasattr(raw_fecha, "date"):
+                fecha_nac = raw_fecha.date().isoformat()
+            else:
+                fecha_nac = str(raw_fecha).strip()
+
 
         if not tipo_doc or not num_doc or not fecha_nac:
-            print(f"⚠️  Fila {idx + 1}: Datos incompletos")
+            print(f"Fila {idx + 1}: Datos incompletos")
             resultados.append(
                 {
                     "tipo_documento": tipo_doc,
@@ -100,7 +110,7 @@ def consultar_desde_excel(
             )
             continue
 
-        print(f"\n🔄 [{idx + 1}/{len(df_input)}] Procesando: {tipo_doc} - {num_doc}")
+        print(f"\n[{idx + 1}/{len(df_input)}] Procesando: {tipo_doc} - {num_doc}")
         
         result = consultar_un_estudiante(
             tipo_documento=tipo_doc,
@@ -111,7 +121,7 @@ def consultar_desde_excel(
         resultados.append(result)
 
     df_resultados = pd.DataFrame(resultados)
-    print(f"\n✅ Proceso completado: {len(df_resultados)} registros procesados")
+    print(f"\nProceso completado: {len(df_resultados)} registros procesados")
     
     return df_resultados
 

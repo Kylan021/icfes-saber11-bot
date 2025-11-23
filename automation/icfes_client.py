@@ -33,17 +33,24 @@ class FetchResult:
 
 
 def _normalizar_fecha(fecha_str: str) -> str:
-    fecha_str = fecha_str.strip()
+
+    fecha_str = str(fecha_str).strip()
     if not fecha_str:
-        return fecha_str
-    if "-" in fecha_str and len(fecha_str) == 10:
-        return fecha_str
+        return ""
+
+    solo_fecha = fecha_str.split()[0]
+
+    if "-" in solo_fecha and len(solo_fecha) == 10:
+        return solo_fecha
+
     try:
         from datetime import datetime as _dt
-        dt = _dt.strptime(fecha_str, "%d/%m/%Y")
+        dt = _dt.strptime(solo_fecha, "%d/%m/%Y")
         return dt.strftime("%Y-%m-%d")
     except ValueError:
-        return fecha_str
+
+        return solo_fecha
+
 
 
 def _seleccionar_tipo_documento(page: Page, tipo_documento: str) -> None:
@@ -191,7 +198,6 @@ def _solve_captcha_with_anticaptcha(page: Page) -> None:
     _trigger_recaptcha_callback(page)
     _handle_recaptcha_challenge(page)
 
-    # ✅ Verificar si el CAPTCHA fue aceptado por el sitio
     print("Verificando si el CAPTCHA fue aceptado por el sitio...")
     page.wait_for_function("""
         () => {
@@ -216,7 +222,7 @@ def _solve_captcha_with_anticaptcha(page: Page) -> None:
 
 
 def _fill_login_form(page: Page, params: LoginParams) -> None:
-    print("📝 Llenando formulario...")
+    print("Llenando formulario...")
     page.wait_for_selector("form", timeout=10000)
     time.sleep(1)
 
@@ -280,7 +286,7 @@ def _fill_login_form(page: Page, params: LoginParams) -> None:
         time.sleep(0.5)
 
     if not params.fecha_nacimiento and not params.numero_registro:
-        print("  ⚠️  ADVERTENCIA: No se proporcionó fecha de nacimiento ni número de registro")
+        print("ADVERTENCIA: No se proporcionó fecha de nacimiento ni número de registro")
 
     print("  → Verificando validaciones...")
     time.sleep(1)
@@ -305,17 +311,28 @@ def _fill_login_form(page: Page, params: LoginParams) -> None:
         }
     """)
     if validation_errors:
-        print(f"  ⚠️  Errores: {validation_errors}")
+        print(f"Errores: {validation_errors}")
     else:
         print("  ✓ Sin errores de validación")
-    print("✅ Formulario completado")
+    print("Formulario completado")
 
 
 def _submit_form_and_wait_results(page: Page) -> None:
     print("Enviando formulario...")
 
-    # ✅ Guardar HTML antes de enviar
-    pre_send_html_path = SCREENSHOT_DIR / f"pre_send_{page.evaluate('() => document.querySelector(\"#identificacion\").value')}.html"
+    def _get_doc_for_filename() -> str:
+        try:
+            return page.evaluate("""
+                () => {
+                    const el = document.querySelector('#identificacion');
+                    return el && el.value ? el.value.trim() : 'sin_identificacion';
+                }
+            """)
+        except Exception:
+            return "sin_identificacion"
+
+    doc_val_before = _get_doc_for_filename()
+    pre_send_html_path = SCREENSHOT_DIR / f"pre_send_{doc_val_before}.html"
     pre_send_html_path.write_text(page.content(), encoding="utf-8")
     print(f"HTML antes de enviar guardado en: {pre_send_html_path}")
 
@@ -323,12 +340,11 @@ def _submit_form_and_wait_results(page: Page) -> None:
     page.wait_for_load_state("networkidle")
     time.sleep(5)
 
-    # ✅ Guardar HTML después de enviar
-    post_send_html_path = SCREENSHOT_DIR / f"post_send_{page.evaluate('() => document.querySelector(\"#identificacion\").value')}.html"
+    doc_val_after = _get_doc_for_filename()
+    post_send_html_path = SCREENSHOT_DIR / f"post_send_{doc_val_after}.html"
     post_send_html_path.write_text(page.content(), encoding="utf-8")
     print(f"HTML después de enviar guardado en: {post_send_html_path}")
 
-    # ✅ Verificar si hay mensaje de error visible
     error_selectors = [
         ".error-message",
         ".alert-danger",
@@ -342,7 +358,6 @@ def _submit_form_and_wait_results(page: Page) -> None:
             error_text = (loc.first.text_content() or "").strip()
             raise RuntimeError(f"El sitio del ICFES muestra error: {error_text}")
 
-    # ✅ Esperar más tiempo y con mayor tolerancia
     try:
         print("Esperando que cargue el puntaje general (máx. 30 s)...")
         page.wait_for_function("""
@@ -357,23 +372,25 @@ def _submit_form_and_wait_results(page: Page) -> None:
         debug_html = SCREENSHOT_DIR / "debug_no_puntaje.html"
         debug_html.write_text(page.content(), encoding="utf-8")
         print(f"HTML guardado en: {debug_html}")
-        raise RuntimeError("No se cargaron los resultados.")
 
-    # ✅ Esperar nombre también
     try:
+        print("Esperando que cargue el nombre del estudiante (máx. 10 s)...")
         page.wait_for_function("""
             () => {
                 const el = document.querySelector("icfes-navbar button");
-                return el && el.textContent.trim().length > 0;
+                return el && el.textContent && el.textContent.trim().length > 0;
             }
         """, timeout=10000)
         print("✔ Nombre cargado.")
     except Exception as e:
         print(f"⚠ No apareció el nombre: {e}")
 
-    print(f"📍 URL actual: {page.url}")
+    print(f"URL actual: {page.url}")
     if "resultados" not in page.url and "reporte" not in page.url:
-        raise RuntimeError("No llegamos a la página de resultados. La URL no contiene 'resultados' ni 'reporte'.")
+        raise RuntimeError(
+            "No llegamos a la página de resultados. "
+            "La URL no contiene 'resultados' ni 'reporte'."
+        )
 
     print("✔ Página de resultados cargada completamente.")
 
@@ -425,7 +442,6 @@ def fetch_results_page(
         print("Enviando formulario...")
         _submit_form_and_wait_results(page)
 
-        # ✅ Guardar HTML real con datos
         real_html_path = SCREENSHOT_DIR / f"real_{params.numero_documento}_con_datos.html"
         real_html_path.write_text(page.content(), encoding="utf-8")
         print(f"HTML con datos guardado en: {real_html_path}")
